@@ -168,50 +168,43 @@ def _comment_extract(tu):
         SEPARATOR = enum.auto()
         UNKNOWN = enum.auto()
 
+    eventsList = []
+    for walkCursor in tu.cursor.walk_preorder():
+        if walkCursor.location.file is None or walkCursor.location.file.name != tu.spelling:
+            continue
+        eventsList.append(("cursorstart", walkCursor, walkCursor.extent.start.line, walkCursor.extent.start.column))
+        eventsList.append(("cursorend", walkCursor, walkCursor.extent.end.line, walkCursor.extent.end.column))
+
     for token in tu.get_tokens(extent=tu.cursor.extent):
-        token_type = TokenType.UNKNOWN
+        if token.kind != TokenKind.COMMENT:
+            continue
+        eventsList.append(("comment", token, token.extent.start.line, token.extent.start.column))
 
-        # Store off the token's cursor for a slight performance improvement
-        # instead of accessing the `cursor` property multiple times.
-        token_cursor = token.cursor
+    eventsList.sort(key=lambda x: (x[2], x[3]))  # Sort by line and column
 
-        # Semicolons and commans belong to cursor of the outer scope.  We want
-        # to be able to add trailing comments after the semicolon on the line,
-        # so skip them here.
-        if token.kind == TokenKind.PUNCTUATION and (
-            token.spelling == ";" or token.spelling == ","
-        ):
-            token_type = TokenType.SKIPPABLE
-
-        # Handle all comments we come across.
-        elif token.kind == TokenKind.COMMENT:
+    for event in eventsList:
+        if event[0] == "comment":
+            token = event[1]
             if is_doc(token):
                 token_type = TokenType.LEADING_COMMENT
             elif is_trailing_doc(token):
                 token_type = TokenType.TRAILING_COMMENT
             else:
                 token_type = TokenType.SEPARATOR
-
-        # Cursors that are 1) never documented themselves, and 2) allowed
-        # between the comment and the actual cursor being documented.
-        elif token_cursor.kind in [
-            CursorKind.INVALID_FILE,
-            CursorKind.TYPE_REF,
-            CursorKind.TEMPLATE_REF,
-            CursorKind.NAMESPACE_REF,
-            CursorKind.PREPROCESSING_DIRECTIVE,
-            CursorKind.MACRO_INSTANTIATION,
-        ]:
-            token_type = TokenType.SKIPPABLE
-
-        # Cursors that are 1) never documented themselves, and 2) not allowed
-        # between the comment and the actual cursor being documented.
-        elif token_cursor.kind in [CursorKind.LINKAGE_SPEC, CursorKind.UNEXPOSED_DECL]:
-            token_type = TokenType.SEPARATOR
-
-        # All other cursors can be documented
-        else:
-            token_type = TokenType.DOCUMENTABLE
+        elif event[0] == "cursorstart":
+            if event[1].kind in [
+                CursorKind.INVALID_FILE,
+                CursorKind.TYPE_REF,
+                CursorKind.TEMPLATE_REF,
+                CursorKind.NAMESPACE_REF,
+                CursorKind.PREPROCESSING_DIRECTIVE,
+                CursorKind.MACRO_INSTANTIATION,
+            ]:
+                token_type = TokenType.SKIPPABLE
+            elif event[1].kind in [CursorKind.LINKAGE_SPEC, CursorKind.UNEXPOSED_DECL]:
+                token_type = TokenType.SEPARATOR
+            else:
+                token_type = TokenType.DOCUMENTABLE
 
         if token_type == TokenType.LEADING_COMMENT:
             if current_leading_comment is not None:
@@ -238,17 +231,17 @@ def _comment_extract(tu):
             # trailing comments to the existing cursor. Otherwise, update the
             # current trailing token to the current cursor.
             if not (
-                token_cursor.kind == CursorKind.TYPEDEF_DECL
+                event[1].kind == CursorKind.TYPEDEF_DECL
                 and current_trailing_token is not None
                 and current_trailing_token.kind
                 in [CursorKind.STRUCT_DECL, CursorKind.UNION_DECL, CursorKind.ENUM_DECL]
-                and current_trailing_token.spelling == token_cursor.spelling
+                and current_trailing_token.spelling == event[1].spelling
             ):
-                current_trailing_token = token_cursor
+                current_trailing_token = event[1]
 
             # If we have a leading comment, it applies to this cursor.
             if current_leading_comment is not None:
-                comments[token_cursor.hash] = current_leading_comment
+                comments[event[1].hash] = current_leading_comment
                 current_leading_comment = None
 
     # Unattached comment at the end of file.
